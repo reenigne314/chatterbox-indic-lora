@@ -23,6 +23,7 @@ REPO_ID = "ResembleAI/chatterbox"
 # Supported languages for the multilingual model
 SUPPORTED_LANGUAGES = {
   "ar": "Arabic",
+  "bn": "Bengali",
   "da": "Danish",
   "de": "German",
   "el": "Greek",
@@ -30,11 +31,15 @@ SUPPORTED_LANGUAGES = {
   "es": "Spanish",
   "fi": "Finnish",
   "fr": "French",
+  "gu": "Gujarati",
   "he": "Hebrew",
   "hi": "Hindi",
   "it": "Italian",
   "ja": "Japanese",
+  "kn": "Kannada",
   "ko": "Korean",
+  "ml": "Malayalam",
+  "mr": "Marathi",
   "ms": "Malay",
   "nl": "Dutch",
   "no": "Norwegian",
@@ -43,6 +48,8 @@ SUPPORTED_LANGUAGES = {
   "ru": "Russian",
   "sv": "Swedish",
   "sw": "Swahili",
+  "ta": "Tamil",
+  "te": "Telugu",
   "tr": "Turkish",
   "zh": "Chinese",
 }
@@ -218,7 +225,80 @@ class ChatterboxMultilingualTTS:
             )
         )
         return cls.from_local(ckpt_dir, device)
-    
+
+    @classmethod
+    def from_indic_lora(
+        cls,
+        device: str = "cuda",
+        lora_repo: str = "reenigne314/chatterbox-indic-lora",
+        lora_dir: str = None,
+        speaker: str = "hi_female",
+    ) -> 'ChatterboxMultilingualTTS':
+        """
+        Load base Chatterbox-Multilingual and apply Indic LoRA in one call.
+
+        Args:
+            device: "cuda", "mps", or "cpu"
+            lora_repo: HuggingFace repo with LoRA weights (ignored if lora_dir set)
+            lora_dir: Local path to LoRA directory (skips HF download)
+            speaker: Speaker conditioning to load, e.g. "te_female", "hi_male"
+
+        Usage:
+            model = ChatterboxMultilingualTTS.from_indic_lora(device="cuda", speaker="te_female")
+            wav = model.generate("నమస్కారం", language_id="te")
+        """
+        # 1. Load base model
+        model = cls.from_pretrained(device=device)
+
+        # 2. Get LoRA weights (download or local)
+        if lora_dir:
+            lora_path = Path(lora_dir)
+        else:
+            lora_path = Path(snapshot_download(
+                repo_id=lora_repo,
+                repo_type="model",
+                token=os.getenv("HF_TOKEN"),
+            ))
+
+        # 3. Load extended tokenizer
+        tokenizer_file = lora_path / "tokenizer" / "extended_tokenizer.json"
+        if not tokenizer_file.exists():
+            raise FileNotFoundError(f"Extended tokenizer not found at {tokenizer_file}")
+        model.tokenizer = MTLTokenizer(str(tokenizer_file))
+
+        # 4. Load checkpoint and resize embeddings
+        ckpt_file = lora_path / "checkpoints" / "best.pt"
+        if not ckpt_file.exists():
+            raise FileNotFoundError(f"LoRA checkpoint not found at {ckpt_file}")
+
+        checkpoint = torch.load(ckpt_file, map_location=device, weights_only=False)
+
+        extended_vocab_size = checkpoint.get("config", {}).get("text_tokens_dict_size", 2871)
+        original_vocab_size = model.t3.text_emb.weight.shape[0]
+        dim = model.t3.text_emb.weight.shape[1]
+
+        if extended_vocab_size > original_vocab_size:
+            new_text_emb = torch.nn.Embedding(extended_vocab_size, dim).to(device)
+            new_text_emb.weight.data[:original_vocab_size] = model.t3.text_emb.weight.data
+            model.t3.text_emb = new_text_emb
+
+            new_text_head = torch.nn.Linear(dim, extended_vocab_size, bias=False).to(device)
+            new_text_head.weight.data[:original_vocab_size] = model.t3.text_head.weight.data
+            model.t3.text_head = new_text_head
+
+        # 5. Apply LoRA weights
+        model.t3.load_state_dict(checkpoint["model_state_dict"], strict=False)
+
+        # 6. Load speaker conditioning
+        conds_file = lora_path / "conds" / f"{speaker}.pt"
+        if conds_file.exists():
+            model.conds = Conditionals.load(conds_file, map_location=device).to(device)
+        else:
+            available = [f.stem for f in (lora_path / "conds").glob("*.pt")]
+            print(f"Warning: speaker '{speaker}' not found. Available: {available}")
+
+        return model
+
     def prepare_conditionals(self, wav_fpath, exaggeration=0.5):
         ## Load reference wav
         s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
@@ -315,3 +395,4 @@ class ChatterboxMultilingualTTS:
             wav = wav.squeeze(0).detach().cpu().numpy()
             watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
         return torch.from_numpy(watermarked_wav).unsqueeze(0)
+
