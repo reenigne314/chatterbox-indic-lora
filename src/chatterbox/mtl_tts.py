@@ -273,21 +273,44 @@ class ChatterboxMultilingualTTS:
 
         checkpoint = torch.load(ckpt_file, map_location=device, weights_only=False)
 
-        extended_vocab_size = checkpoint.get("config", {}).get("text_tokens_dict_size", 2871)
+        # 4a. Resize embeddings if checkpoint has extended vocab
         original_vocab_size = model.t3.text_emb.weight.shape[0]
         dim = model.t3.text_emb.weight.shape[1]
 
-        if extended_vocab_size > original_vocab_size:
+        if "text_emb_weight" in checkpoint:
+            # Checkpoint contains full extended embedding tensors
+            extended_vocab_size = checkpoint.get("new_vocab_size", checkpoint["text_emb_weight"].shape[0])
+
             new_text_emb = torch.nn.Embedding(extended_vocab_size, dim).to(device)
-            new_text_emb.weight.data[:original_vocab_size] = model.t3.text_emb.weight.data
+            new_text_emb.weight.data = checkpoint["text_emb_weight"].to(device)
             model.t3.text_emb = new_text_emb
 
             new_text_head = torch.nn.Linear(dim, extended_vocab_size, bias=False).to(device)
-            new_text_head.weight.data[:original_vocab_size] = model.t3.text_head.weight.data
+            new_text_head.weight.data = checkpoint["text_head_weight"].to(device)
             model.t3.text_head = new_text_head
+        elif "config" in checkpoint:
+            # Fallback: resize and let load_state_dict fill in
+            extended_vocab_size = checkpoint["config"].get("text_tokens_dict_size", original_vocab_size)
+            if extended_vocab_size > original_vocab_size:
+                new_text_emb = torch.nn.Embedding(extended_vocab_size, dim).to(device)
+                new_text_emb.weight.data[:original_vocab_size] = model.t3.text_emb.weight.data
+                model.t3.text_emb = new_text_emb
 
-        # 5. Apply LoRA weights
-        model.t3.load_state_dict(checkpoint["model_state_dict"], strict=False)
+                new_text_head = torch.nn.Linear(dim, extended_vocab_size, bias=False).to(device)
+                new_text_head.weight.data[:original_vocab_size] = model.t3.text_head.weight.data
+                model.t3.text_head = new_text_head
+
+        # 5. Apply LoRA weights into T3 transformer
+        if "lora_state_dict" in checkpoint:
+            # Merge LoRA weights into tfmr state dict
+            model_state = model.t3.tfmr.state_dict()
+            for k, v in checkpoint["lora_state_dict"].items():
+                if k in model_state:
+                    model_state[k] = v.to(device)
+            model.t3.tfmr.load_state_dict(model_state)
+        elif "model_state_dict" in checkpoint:
+            # Alternative format: full model state dict
+            model.t3.load_state_dict(checkpoint["model_state_dict"], strict=False)
 
         # 6. Load speaker conditioning
         conds_file = lora_path / "conds" / f"{speaker}.pt"
@@ -296,6 +319,9 @@ class ChatterboxMultilingualTTS:
         else:
             available = [f.stem for f in (lora_path / "conds").glob("*.pt")]
             print(f"Warning: speaker '{speaker}' not found. Available: {available}")
+
+        # Stash path so app.py / callers can find conds dir
+        model._lora_dir = str(lora_path)
 
         return model
 
