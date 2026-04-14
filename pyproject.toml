@@ -9,26 +9,26 @@ authors = [
     {name = "resemble-ai", email = "engineering@resemble.ai"}
 ]
 dependencies = [
-    # numpy 1.x for Python < 3.13 (no 1.x wheels on 3.13+), numpy 2.x for 3.13+
+    # ── PyTorch is NOT listed here ──
+    # Install it FIRST for your GPU before installing this package:
+    #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # Blackwell/50-series
+    #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124  # Ampere/Ada/40-series
+    #   pip install torch torchaudio                                                      # CPU only
     "numpy>=1.24.0,<2.0.0; python_version < '3.13'",
     "numpy>=2.0.0; python_version >= '3.13'",
     "librosa==0.11.0",
     "s3tokenizer",
-    # torch 2.6.0 supports Python 3.10-3.13; Python 3.14 needs 2.9.0+
-    "torch>=2.4.0; python_version < '3.14'",
-    "torch>=2.9.0; python_version >= '3.14'",
-    "torchaudio>=2.4.0; python_version < '3.14'",
-    "torchaudio>=2.9.0; python_version >= '3.14'",
     "transformers>=4.40.0",
     "diffusers>=0.29.0",
     "resemble-perth @ git+https://github.com/resemble-ai/Perth.git@master",
     "conformer==0.3.2",
-    "safetensors>=0.4",
+    "safetensors>=0.4.0",
     "spacy-pkuseg",
     "pykakasi==2.3.0",
     "gradio>=4.0.0",
     "pyloudnorm",
-    "omegaconf"
+    "omegaconf",
+    "huggingface_hub>=0.20.0",
 ]
 
 [project.urls]
@@ -41,3 +41,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
